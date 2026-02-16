@@ -1,0 +1,331 @@
+---
+title: "Assignment 1: Neural Networks (IMDB - Fast Hyperparameter Experiments)"
+author: "Jaipreet Kaur"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: '3'
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = TRUE)
+```
+
+## Purpose (fast version)
+
+This notebook **runs faster** by doing a focused set of experiments that still addresses every assignment requirement:
+
+1) **Hidden layers:** compare 1 vs 2 (baseline) vs 3  
+2) **Hidden units:** compare 32 vs 64 (baseline) vs 128  
+3) **Loss:** compare `mse` vs `binary_crossentropy`  
+4) **Activation:** compare `tanh` vs `relu`  
+5) **Technique:** compare baseline vs **Dropout + L2 + Early stopping**  
+
+Instead of a full grid, we use a **one-factor-at-a-time** experiment plan (about 8 model runs total).
+
+---
+
+## 1. Environment setup (required for knitting)
+
+```{r python-setup, include=FALSE}
+venv_python <- "C:/Users/neela/Documents/.virtualenvs/r-tensorflow/Scripts/python.exe"
+
+if (!file.exists(venv_python)) {
+  stop(
+    paste0(
+      "Python for the virtualenv was not found at:\n  ", venv_python, "\n\n",
+      "Fix: Ensure your 'r-tensorflow' virtualenv exists at that path."
+    )
+  )
+}
+
+Sys.setenv(RETICULATE_PYTHON = venv_python)
+
+library(reticulate)
+use_python(venv_python, required = TRUE)
+
+# Confirm TensorFlow imports in this env
+tryCatch(
+  py_run_string("import tensorflow as tf; import numpy as np; print('TF', tf.__version__); print('NumPy', np.__version__)"),
+  error = function(e) stop("TensorFlow is not importable in this Python env.\n\nDetails:\n", e$message)
+)
+```
+
+```{r packages}
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+
+needed <- c("tensorflow","reticulate","dplyr","tidyr","ggplot2","purrr","knitr")
+to_install <- needed[!vapply(needed, requireNamespace, logical(1), quietly = TRUE)]
+if (length(to_install) > 0) install.packages(to_install)
+
+library(tensorflow)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+
+set.seed(123)
+tensorflow::tf$random$set_seed(123L)
+```
+
+---
+
+## 2. Load & prepare IMDB data (via Python)
+
+```{r data}
+max_words <- 10000L
+
+library(reticulate)
+
+py_run_string("
+import numpy as np
+from tensorflow.keras.datasets import imdb
+
+max_words = 10000
+(train_seq, y_train), (test_seq, y_test) = imdb.load_data(num_words=max_words)
+")
+
+train_seq <- py$train_seq
+y_train   <- as.numeric(py$y_train)
+test_seq  <- py$test_seq
+y_test    <- as.numeric(py$y_test)
+
+vectorize_sequences <- function(sequences, dimension = max_words) {
+  n <- length(sequences)
+  results <- matrix(0, nrow = n, ncol = dimension)
+  for (i in seq_len(n)) {
+    idx <- sequences[[i]]
+    idx <- idx[idx > 0 & idx <= dimension]
+    results[i, idx] <- 1
+  }
+  results
+}
+
+x_train <- vectorize_sequences(train_seq, max_words)
+x_test  <- vectorize_sequences(test_seq,  max_words)
+
+# Validation split (10,000 samples)
+val_n <- 10000
+x_val <- x_train[1:val_n, ]
+partial_x_train <- x_train[(val_n + 1):nrow(x_train), ]
+y_val <- y_train[1:val_n]
+partial_y_train <- y_train[(val_n + 1):length(y_train)]
+
+# Make y arrays 2D for Keras adapter compatibility
+y_val_m <- as.matrix(y_val)
+y_train_m <- as.matrix(partial_y_train)
+y_test_m <- as.matrix(y_test)
+
+c(train = nrow(partial_x_train), val = nrow(x_val), test = nrow(x_test))
+```
+
+---
+
+## 3. Model builder (tf$keras)
+
+```{r model-builder}
+tf <- tensorflow::tf
+
+build_model <- function(
+  n_hidden_layers = 2L,
+  units = 64L,
+  activation = "relu",
+  loss = "binary_crossentropy",
+  dropout_rate = 0,
+  l2_lambda = 0
+) {
+  regularizer <- if (l2_lambda > 0) tf$keras$regularizers$l2(l2_lambda) else NULL
+
+  model <- tf$keras$models$Sequential()
+
+  model$add(tf$keras$layers$Dense(
+    units = as.integer(units),
+    activation = activation,
+    input_shape = list(as.integer(max_words)),
+    kernel_regularizer = regularizer
+  ))
+
+  if (dropout_rate > 0) model$add(tf$keras$layers$Dropout(rate = dropout_rate))
+
+  if (n_hidden_layers > 1) {
+    for (i in 2:as.integer(n_hidden_layers)) {
+      model$add(tf$keras$layers$Dense(
+        units = as.integer(units),
+        activation = activation,
+        kernel_regularizer = regularizer
+      ))
+      if (dropout_rate > 0) model$add(tf$keras$layers$Dropout(rate = dropout_rate))
+    }
+  }
+
+  model$add(tf$keras$layers$Dense(units = 1L, activation = "sigmoid"))
+
+  model$compile(
+    optimizer = "rmsprop",
+    loss = loss,
+    metrics = list("accuracy")
+  )
+
+  model
+}
+```
+
+---
+
+## 4. Focused experiment plan (fast)
+
+Baseline used in class: **2 layers, 64 units, relu, binary_crossentropy, no regularization**.
+
+Then we change **one factor at a time** to satisfy each requirement.
+
+```{r experiment-plan}
+baseline <- list(
+  name = "Baseline (2L,64,relu,BCE,no-reg)",
+  n_hidden_layers = 2L, units = 64L, activation = "relu", loss = "binary_crossentropy",
+  dropout_rate = 0, l2_lambda = 0
+)
+
+experiments <- list(
+  baseline,
+  list(name="1 Hidden Layer",  n_hidden_layers=1L, units=64L, activation="relu", loss="binary_crossentropy", dropout_rate=0,   l2_lambda=0),
+  list(name="3 Hidden Layers", n_hidden_layers=3L, units=64L, activation="relu", loss="binary_crossentropy", dropout_rate=0,   l2_lambda=0),
+  list(name="32 Units",        n_hidden_layers=2L, units=32L, activation="relu", loss="binary_crossentropy", dropout_rate=0,   l2_lambda=0),
+  list(name="128 Units",       n_hidden_layers=2L, units=128L, activation="relu", loss="binary_crossentropy", dropout_rate=0,  l2_lambda=0),
+  list(name="Loss = MSE",      n_hidden_layers=2L, units=64L, activation="relu", loss="mse",                 dropout_rate=0,   l2_lambda=0),
+  list(name="Activation = tanh",n_hidden_layers=2L, units=64L, activation="tanh",loss="binary_crossentropy", dropout_rate=0,   l2_lambda=0),
+  list(name="Technique: Dropout+L2", n_hidden_layers=2L, units=64L, activation="relu", loss="binary_crossentropy", dropout_rate=0.2, l2_lambda=0.001)
+)
+
+length(experiments)
+```
+
+---
+
+## 5. Run experiments (fast settings)
+
+To run faster:
+- **epochs = 6** with **early stopping**
+- batch_size = 512
+
+```{r run, cache=TRUE, message=FALSE, warning=FALSE}
+run_one <- function(cfg) {
+  model <- build_model(
+    n_hidden_layers = cfg$n_hidden_layers,
+    units = cfg$units,
+    activation = cfg$activation,
+    loss = cfg$loss,
+    dropout_rate = cfg$dropout_rate,
+    l2_lambda = cfg$l2_lambda
+  )
+
+  cb <- tf$keras$callbacks$EarlyStopping(
+    monitor = "val_accuracy",
+    patience = 1L,
+    mode = "max",
+    restore_best_weights = TRUE
+  )
+
+  history <- model$fit(
+    x = partial_x_train,
+    y = y_train_m,
+    epochs = 6L,
+    batch_size = 512L,
+    validation_data = list(x_val, y_val_m),
+    callbacks = list(cb),
+    verbose = 0L
+  )
+
+  best_val_acc <- max(unlist(history$history$val_accuracy))
+
+  eval <- model$evaluate(x_test, y_test_m, verbose = 0L)
+  test_loss <- as.numeric(eval[[1]])
+  test_acc  <- as.numeric(eval[[2]])
+
+  tibble(
+    experiment = cfg$name,
+    n_hidden_layers = cfg$n_hidden_layers,
+    units = cfg$units,
+    activation = cfg$activation,
+    loss = cfg$loss,
+    dropout_rate = cfg$dropout_rate,
+    l2_lambda = cfg$l2_lambda,
+    best_val_accuracy = best_val_acc,
+    test_accuracy = test_acc,
+    test_loss = test_loss
+  )
+}
+
+results <- purrr::map_dfr(experiments, run_one)
+results
+```
+
+---
+
+## 6. Summary table (required)
+
+```{r summary-table}
+results_sorted <- results |> arrange(desc(best_val_accuracy), desc(test_accuracy))
+knitr::kable(results_sorted, digits = 4)
+```
+
+---
+
+## 7. Graphs (required)
+
+### 7.1 Validation accuracy by experiment
+
+```{r plot-val}
+ggplot(results_sorted, aes(x = reorder(experiment, best_val_accuracy), y = best_val_accuracy)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Best Validation Accuracy by Experiment (Fast Plan)",
+    x = "Experiment",
+    y = "Best Validation Accuracy"
+  )
+```
+
+### 7.2 Test accuracy by experiment
+
+```{r plot-test}
+ggplot(results_sorted, aes(x = reorder(experiment, test_accuracy), y = test_accuracy)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Test Accuracy by Experiment (Fast Plan)",
+    x = "Experiment",
+    y = "Test Accuracy"
+  )
+```
+
+---
+
+## 8. Final conclusion / story (required)
+
+```{r best}
+best <- results_sorted |> slice(1)
+best
+```
+
+### Conclusion
+
+- Changing the number of hidden layers (1 vs 3) shows how model capacity affects **validation and test accuracy**.
+- Changing hidden units (32/64/128) shows how increasing capacity can help until overfitting begins.
+- Using **MSE** instead of **binary cross-entropy** typically reduces classification performance, since cross-entropy is designed for probabilistic binary classification.
+- Using **tanh** instead of **relu** changes learning dynamics; performance may differ due to saturation vs piecewise-linear behavior.
+- The technique (**Dropout + L2 + early stopping**) is used to **improve validation accuracy** by reducing overfitting.
+
+The final selected model is the experiment with the highest validation accuracy (and strong test accuracy), shown in the `best` row.
+
+---
+
+## 9. Export results (for GitHub)
+
+```{r export}
+write.csv(results, "imdb_hyperparam_results_fast.csv", row.names = FALSE)
+list.files(pattern = "imdb_hyperparam_results_fast.csv")
+```

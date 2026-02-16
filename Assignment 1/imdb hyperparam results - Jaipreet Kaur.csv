@@ -1,0 +1,9 @@
+"experiment","n_hidden_layers","units","activation","loss","dropout_rate","l2_lambda","best_val_accuracy","test_accuracy","test_loss"
+"Baseline (2L,64,relu,BCE,no-reg)",2,64,"relu","binary_crossentropy",0,0,0.889100015163422,0.883440017700195,0.287144362926483
+"1 Hidden Layer",1,64,"relu","binary_crossentropy",0,0,0.888899981975555,0.883560001850128,0.293849259614944
+"3 Hidden Layers",3,64,"relu","binary_crossentropy",0,0,0.887899994850159,0.883560001850128,0.289754658937454
+"32 Units",2,32,"relu","binary_crossentropy",0,0,0.887700021266937,0.883319973945618,0.291804850101471
+"128 Units",2,128,"relu","binary_crossentropy",0,0,0.889299988746643,0.88484001159668,0.283526748418808
+"Loss = MSE",2,64,"relu","mse",0,0,0.886399984359741,0.883279979228973,0.0877597630023956
+"Activation = tanh",2,64,"tanh","binary_crossentropy",0,0,0.886699974536896,0.879480004310608,0.29621160030365
+"Technique: Dropout+L2",2,64,"relu","binary_crossentropy",0.2,0.001,0.865899980068207,0.861559987068176,0.522869646549225
