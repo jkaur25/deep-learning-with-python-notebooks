@@ -1,0 +1,6 @@
+Approach,Question,Training Total,Validation Total,Test Total,Test Accuracy
+Scratch,Q1,1000,500,500,0.5040000081062317
+Scratch,Q2,1400,500,500,0.6060000061988831
+Scratch,Q3 Best Size,1800,500,500,0.5559999942779541
+Pretrained,Q1 Repeat,1000,500,500,0.9819999933242798
+Pretrained,Q2/Q3 Best Size,1000,500,500,0.9879999756813049
